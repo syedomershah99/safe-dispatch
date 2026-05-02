@@ -86,9 +86,15 @@ Standard Twin Delayed DDPG ([Fujimoto et al., 2018](https://arxiv.org/abs/1802.0
   <img src="assets/td3_flowchart.png" alt="TD3 algorithm flowchart" width="850"/>
 </p>
 
-<p align="center">
-  <img src="assets/hyperparameters.png" alt="TD3 training hyperparameters" width="600"/>
-</p>
+**Training hyperparameters**
+
+| Parameter | Value | Parameter | Value |
+|---|---|---|---|
+| Max timesteps | 300,000 | Batch size | 256 |
+| Discount γ | 0.99 | Target update τ | 0.005 |
+| Policy noise σ | 0.2 | Noise clip c | 0.5 |
+| Policy frequency f | 2 | Buffer size | 10⁶ |
+| Exploration noise | 0.2 | Learning rate α | 3 × 10⁻⁴ |
 
 ### Reward Design
 
