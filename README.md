@@ -2,7 +2,11 @@
 
 **Safe, real-time Security-Constrained Economic Dispatch (SCED) on a 4-bus power system using a TD3 reinforcement-learning agent with a CVXPY/OSQP safety-projection layer.**
 
-A trained Twin Delayed DDPG (TD3) policy proposes generator setpoints in milliseconds; a quadratic-program safety layer projects every action onto the feasible operating set defined by power-balance, generator limits, and PTDF-based thermal-line constraints. The result is a controller that is **orders of magnitude faster than a traditional QP solver while remaining provably feasible**, benchmarked head-to-head against an OSQP optimizer on the same network.
+A trained Twin Delayed DDPG (TD3) policy proposes generator setpoints in **0.46 ms**; a quadratic-program safety layer projects every action onto the feasible operating set defined by power balance, generator limits, and PTDF-based thermal-line constraints. The result is a controller that is **32.1× faster than a traditional OSQP-based SCED solver** while remaining provably feasible and within a **4.24% average cost gap** of the optimum.
+
+<p align="center">
+  <img src="assets/architecture.png" alt="Closed-loop control with projection-based safety layer" width="850"/>
+</p>
 
 ---
 
@@ -28,13 +32,17 @@ A trained Twin Delayed DDPG (TD3) policy proposes generator setpoints in millise
 
 ## Motivation
 
-Modern grids increasingly need sub-second dispatch decisions to absorb renewable variability, contingencies, and demand swings. Classical Security-Constrained Economic Dispatch is solved as a constrained quadratic program: optimal, but expensive and brittle when problems become large or must be re-solved at sub-second cadence.
+Modern grids increasingly need sub-second dispatch decisions to absorb renewable variability, contingencies, and demand swings. Classical Security-Constrained Economic Dispatch is solved as a constrained quadratic program: optimal, but expensive and brittle when the problem must be re-solved at sub-second cadence.
 
-**Safe Dispatch** asks: *can a learned policy match the optimizer's quality while being fast enough for real-time control, without sacrificing physical feasibility?* The answer is yes — provided the learner is wrapped with a lightweight feasibility projection that turns any proposed action into the closest feasible action.
+**Safe Dispatch** asks: *can a learned policy match the optimizer's quality while being fast enough for real-time control, without sacrificing physical feasibility?* The answer demonstrated here is yes — provided the learner is wrapped with a lightweight feasibility projection that turns any proposed action into the closest feasible action.
 
 ## System Overview
 
-The testbed is the **modified 4-bus `case4gs` system** (Grainger & Stevenson) with four generators (one slack, two cheap, one expensive), four loads, and four transmission lines. One line is intentionally tightened to create a recurring congestion bottleneck so that purely cost-greedy dispatch is *not* feasible — the agent must learn to redispatch around the constraint.
+The testbed is the **modified 4-bus `case4gs` system** (Grainger & Stevenson) with four generators (one slack, two cheap, one expensive), four loads, and four transmission lines. One line is intentionally tightened to create a recurring congestion bottleneck so that a purely cost-greedy dispatch is *not* feasible — the agent must learn to redispatch around the constraint.
+
+<p align="center">
+  <img src="assets/system_4bus.png" alt="4-bus case4gs system network" width="600"/>
+</p>
 
 | Component | Value |
 |---|---|
@@ -72,12 +80,15 @@ Solved with OSQP via CVXPY. This guarantees that what is *actually* dispatched i
 
 ### TD3 Agent
 
-Standard Twin Delayed DDPG ([Fujimoto et al., 2018](https://arxiv.org/abs/1802.09477)) implemented in PyTorch:
+Standard Twin Delayed DDPG ([Fujimoto et al., 2018](https://arxiv.org/abs/1802.09477)) implemented in PyTorch — twin Q-networks (clipped double-Q), target policy smoothing, delayed actor updates, Polyak target updates.
 
-- **Actor**: 2 × 256 MLP, `tanh` output bounded to `±max_action`
-- **Critic**: twin Q-networks (clipped double-Q), 2 × 256 MLP each
-- **Tricks**: target policy smoothing, delayed actor updates (`policy_freq=2`), Polyak target updates (`τ=0.005`)
-- **Optimizer**: Adam, `lr=3e-4`, `γ=0.99`, batch 256, replay buffer 1e6
+<p align="center">
+  <img src="assets/td3_flowchart.png" alt="TD3 algorithm flowchart" width="850"/>
+</p>
+
+<p align="center">
+  <img src="assets/hyperparameters.png" alt="TD3 training hyperparameters" width="600"/>
+</p>
 
 ### Reward Design
 
@@ -91,16 +102,62 @@ Each term is bounded, which is critical for stable Q-learning.
 
 ## Results
 
-Benchmarked against the **traditional OSQP-solved SCED** on identical load trajectories:
+### Headline numbers (1,000-step benchmark vs. traditional OSQP solver)
 
 | Metric | TD3 + Safety Layer | Traditional QP | Notes |
 |---|---|---|---|
-| Inference time | **milliseconds** | tens of milliseconds | RL is ~order(s) of magnitude faster |
-| Cost gap vs. optimum | **< 1%** on average | optimum (lower bound) | Near-optimal economically |
+| Mean decision latency | **0.46 ms** | 14.63 ms | **32.1× speedup** |
+| Avg cost gap vs. optimum | **+4.24%** | optimum (lower bound) | Near-optimal economically |
+| Power-balance residual | **0%** across all steps | 0% | Both feasible by construction |
 | Constraint violations | **0** post-projection | 0 | Both feasible by construction |
-| Stability under load drift | High (mismatch concentrated near 0) | High | Comparable robustness |
+| Grid stability | **100%** | 100% | No load shedding observed |
 
-See `report.pdf` and `presentation.pptx` for full plots: training curves (reward, critic/actor loss, violations), 24-step greedy dispatch traces, demand–supply tracking, cost over time, computational-efficiency bar chart, and mismatch histograms.
+### Training curves (3,000 episodes)
+
+Training stabilises early (episode ≈ 49 hits the violation-mastery threshold) and stays steady for the remaining 2,950+ episodes — the bounded reward terms keep critic and actor losses well-behaved.
+
+<p align="center">
+  <img src="assets/training_reward.png" alt="Training reward curve" width="49%"/>
+  <img src="assets/training_violations.png" alt="Training line-violation curve" width="49%"/>
+</p>
+
+<p align="center">
+  <img src="assets/training_critic_loss.png" alt="Critic loss curve" width="49%"/>
+  <img src="assets/training_actor_loss.png" alt="Actor loss curve" width="49%"/>
+</p>
+
+### Operational view (single step, rendered by the env)
+
+The agent learns to redispatch *away from* generators that overload the bottleneck line. When a raw action would overload line 1–3 (left, ≫100% loading, "CRITICAL: REROUTING FLOW"), the safety layer projects to a feasible setpoint (right, ≤95.9% loading) at the cost of a small redispatch.
+
+<p align="center">
+  <img src="assets/operational_critical.png" alt="Operational view: critical congestion" width="49%"/>
+  <img src="assets/operational_safe.png" alt="Operational view: post-projection safe dispatch" width="49%"/>
+</p>
+
+### 24-step greedy evaluation (one operating day)
+
+The agent's *intended* supply (red) drifts off demand early in the episode, but the safety layer (green) keeps actual supply locked to demand throughout — and unit cost (\$/MWh) settles within ~0.05 \$/MWh of intent.
+
+<p align="center">
+  <img src="assets/eval_demand_tracking.png" alt="Real-time demand tracking" width="49%"/>
+  <img src="assets/eval_unit_cost.png" alt="Generation unit cost over evaluation" width="49%"/>
+</p>
+
+### 1,000-step benchmark vs. traditional optimization
+
+The RL agent's *actual* (post-projection) supply tracks total demand essentially perfectly, matching the traditional optimizer's trajectory; cost runs ~4% above the optimal lower bound on average; and the speed advantage is dramatic.
+
+<p align="center">
+  <img src="assets/benchmark_dispatch.png" alt="Dispatch comparison vs. traditional optimum" width="49%"/>
+  <img src="assets/benchmark_cost.png" alt="Operational cost over time" width="49%"/>
+</p>
+
+<p align="center">
+  <img src="assets/benchmark_speed.png" alt="Computational efficiency comparison: 0.46 ms vs 14.63 ms" width="500"/>
+</p>
+
+For full plots, ablations, mismatch histograms, and methodology details see [`report.pdf`](report.pdf) and [`presentation.pptx`](presentation.pptx).
 
 ## Repository Layout
 
@@ -112,6 +169,7 @@ safe-dispatch/
 ├── td3_sced_final_model.pth     # Trained model checkpoint
 ├── report.pdf                   # Final written report
 ├── presentation.pptx            # Final presentation slides
+├── assets/                      # Figures used in this README
 ├── requirements.txt
 ├── LICENSE
 └── README.md
@@ -185,8 +243,10 @@ imageio.mimsave("episode.gif", env.frames, fps=2)
 
 ## Authors
 
-- **Syed Omer Shah** ([@Syedomershah99](https://github.com/Syedomershah99))
-- **Moruf Adedeji**
+- **Morufdeen Atilola** (50594045)
+- **Syed Omer Shah** (50679882) ([@Syedomershah99](https://github.com/Syedomershah99))
+
+Originally produced as a graduate Reinforcement Learning final project (CSE 546, Spring 2026); released here as a standalone, open-source artefact.
 
 ## References
 
